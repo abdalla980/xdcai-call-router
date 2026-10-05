@@ -2,7 +2,7 @@
   "name": "Call Router",
   "upstreamBaseUrl": "https://bland-gold-pi--abdullahizzldin.replit.app",
   "description": "Send one task sentence. Get one ready marketplace call: method, URL, request body, and the command to run.",
-  "tags": ["xdc", "agent", "marketplace", "x402", "route", "router", "recommend", "endpoint"],
+  "tags": ["xdc", "agent", "marketplace", "x402", "route", "router", "recommend", "endpoint", "coffee", "latte", "merch", "token", "erc20", "sanctions", "screening", "screen", "xns", "resolve"],
   "paymentType": "x402",
   "isPublic": true,
   "auth": { "method": "none" },

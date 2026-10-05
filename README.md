@@ -70,19 +70,21 @@ The body is copied from that provider's published example, or filled from the re
 
 A task that matches nothing returns `call: null` and says not to pay anyone.
 
-## How an agent actually chooses
+## How an agent decides to buy
 
-The official setup tells an agent to run:
+This is the loop the XDCAI setup gives an agent:
 
-```bash
-npx xdcai marketplace list --search word1,word2
-```
+1. The human says something like "deploy an ERC20" or "buy a latte."
+2. The agent pulls the content words out of that sentence.
+3. It runs `npx xdcai marketplace list --search` with those words.
+4. It calls the first row. The list is ranked by words, not by price.
+5. It pays that row's price from its own wallet.
 
-That list is ranked by words, not by price. A tag that equals the search word scores highest, then words in the capability, then the provider name. The price is not part of the score. `--max-price` is only a ceiling, and the agent uses it when it already knows which capability it wants.
+A matching tag is the highest score. Words inside a capability score less. The provider name scores less than that. Two rows with the same score stay in catalog order, and Call Router is earlier in the catalog than the specialist shops. A lower price never moves a row up. Cutting 0.05 USDC to 0.01 USDC would not make more agents buy.
 
-So a lower price does not move this service up the list. An agent told "deploy an ERC20" searches `erc20` or `token` and gets the token service. It never sees Call Router. An agent told "I don't know which endpoint to pay" searches `route`, `recommend`, `endpoint`, or `marketplace` and Call Router is the first row.
+Before the task words were tags, a search for `coffee` or `token` returned the coffee shop or the token shop and this service was invisible. The listing now carries the words agents actually search: `coffee`, `latte`, `merch`, `token`, `erc20`, `sanctions`, `screening`, `screen`, `xns`, `resolve`, plus `route`, `recommend`, and `endpoint`. A search for those words returns the paid `/route` row first. The agent pays 0.05 USDC and receives the ready command for the real shop.
 
-Cheaper than 0.05 would not change that. It would only mean each real buyer pays less.
+An agent that reads every row and picks the shop whose capability is the job itself can still skip this service. The agents that follow the rank and call the first row are the buyers.
 
 ## What this does not do
 
