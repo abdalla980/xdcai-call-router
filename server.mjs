@@ -112,12 +112,214 @@ function fillUrl(url, task) {
   return { url: out, missing: [...new Set(missing)] };
 }
 
-function freeSibling(services, service) {
-  return services.find((s) => {
+function docSiblings(services, service) {
+  return services.filter((s) => {
     if (s.providerId !== service.providerId || priceOf(s) > 0) return false;
     const blob = `${s.url} ${s.capability}`.toLowerCase();
-    return /schema|openapi|sample|how-to|instruction|menu|requirements/.test(blob);
+    return /schema|openapi|sample|how-to|instruction|requirements/.test(blob);
   });
+}
+
+const docsCache = new Map();
+
+async function loadDocs(siblings) {
+  const docs = [];
+  await Promise.all(
+    siblings.map(async (sibling) => {
+      const hit = docsCache.get(sibling.url);
+      if (hit && Date.now() - hit.at < 60_000) {
+        if (hit.doc) docs.push({ url: sibling.url, doc: hit.doc });
+        return;
+      }
+      try {
+        const res = await fetch(sibling.url, {
+          headers: { accept: "application/json", "user-agent": "xdcai-agent" },
+          signal: AbortSignal.timeout(4000),
+        });
+        if (!res.ok) {
+          docsCache.set(sibling.url, { at: Date.now(), doc: null });
+          return;
+        }
+        const doc = await res.json();
+        docsCache.set(sibling.url, { at: Date.now(), doc });
+        docs.push({ url: sibling.url, doc });
+      } catch {
+        docsCache.set(sibling.url, { at: Date.now(), doc: null });
+      }
+    })
+  );
+  return docs;
+}
+
+function servicePath(service) {
+  try {
+    return new URL(service.url).pathname;
+  } catch {
+    return "";
+  }
+}
+
+function pathScore(specPath, targetPath) {
+  if (!specPath || !targetPath) return 0;
+  const spec = specPath.startsWith("/") ? specPath : `/${specPath}`;
+  if (targetPath === spec || targetPath.endsWith(spec)) return 3;
+  const last = spec.split("/").filter(Boolean).pop();
+  if (last && last.length >= 3 && targetPath.toLowerCase().includes(`/${last.toLowerCase()}`)) return 1;
+  return 0;
+}
+
+function isSchemaField(value) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      typeof value.type === "string" &&
+      ("required" in value || "description" in value || "maxLength" in value || "format" in value || "properties" in value || "items" in value)
+  );
+}
+
+function isFieldMap(value) {
+  const entries = Object.entries(value || {});
+  return entries.length > 0 && entries.every(([, field]) => isSchemaField(field));
+}
+
+function isJsonSchema(value) {
+  return Boolean(value && typeof value === "object" && value.type === "object" && value.properties);
+}
+
+function isConcrete(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (isFieldMap(value) || isJsonSchema(value)) return false;
+  return Object.values(value).some((item) => item == null || ["string", "number", "boolean"].includes(typeof item));
+}
+
+function resolveRef(doc, schema) {
+  if (!schema || typeof schema.$ref !== "string") return schema;
+  const name = schema.$ref.split("/").pop();
+  return doc.components?.schemas?.[name] || schema;
+}
+
+function collect(doc, targetPath) {
+  const concrete = [];
+  const schemas = [];
+  const add = (specPath, body) => {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return;
+    const score = pathScore(specPath, targetPath);
+    if (!score) return;
+    if (isConcrete(body)) concrete.push({ score, body });
+    else if (isFieldMap(body) || isJsonSchema(body)) schemas.push({ score, body });
+  };
+
+  if (doc.body) add(doc.path || targetPath, doc.body);
+  if (doc.inputSchema && typeof doc.inputSchema === "object") {
+    for (const [key, spec] of Object.entries(doc.inputSchema)) add(key, spec?.body);
+  }
+  if (doc.operations && typeof doc.operations === "object") {
+    for (const spec of Object.values(doc.operations)) add(spec?.path, spec?.body);
+  }
+  if (doc.fixed_examples && typeof doc.fixed_examples === "object") {
+    for (const [key, body] of Object.entries(doc.fixed_examples)) add(`/${key}`, body);
+  }
+  if (doc.paths && typeof doc.paths === "object") {
+    for (const [key, item] of Object.entries(doc.paths)) {
+      const op = item?.post || item?.put;
+      const media = op?.requestBody?.content?.["application/json"];
+      if (!media) continue;
+      if (isConcrete(media.example)) add(key, media.example);
+      else add(key, resolveRef(doc, media.schema));
+    }
+  }
+  concrete.sort((a, b) => b.score - a.score);
+  schemas.sort((a, b) => b.score - a.score);
+  return { concrete: concrete[0]?.body || null, schema: schemas[0]?.body || null };
+}
+
+function clip(value, maxLength) {
+  const text = String(value);
+  return Number.isFinite(maxLength) && maxLength > 0 ? text.slice(0, maxLength) : text;
+}
+
+function stringFromTask(name, task, field) {
+  const address = task.match(/0x[a-fA-F0-9]{40}/)?.[0];
+  const xdcName = task.match(/\b[a-z0-9-]+\.xdc\b/i)?.[0];
+  if (address && /address|wallet|owner|account/i.test(name)) return address;
+  if (xdcName && /name|domain/i.test(name)) return xdcName;
+  if (/draft|description|text|query|prompt|task|message|input|content/i.test(name)) return clip(task, field?.maxLength);
+  return null;
+}
+
+function materialize(schema, task) {
+  const missing = [];
+  const body = {};
+  const fields = isJsonSchema(schema)
+    ? Object.entries(schema.properties).filter(([name]) => (schema.required || []).includes(name))
+    : Object.entries(schema).filter(([, field]) => field?.required === true);
+
+  for (const [name, field] of fields) {
+    if (field?.default !== undefined && !/draft|description|text|query|prompt|task|message|input|content/i.test(name)) {
+      body[name] = field.default;
+      continue;
+    }
+    const type = field?.type;
+    if (type === "string" || type === undefined) {
+      const value = stringFromTask(name, task, field);
+      if (value == null) missing.push(name);
+      else body[name] = value;
+      continue;
+    }
+    if (type === "boolean" && typeof field.default === "boolean") {
+      body[name] = field.default;
+      continue;
+    }
+    missing.push(name);
+  }
+  return missing.length ? { body: null, missing } : { body, missing };
+}
+
+function applyTaskFacts(example, task) {
+  const copy = structuredClone(example);
+  const address = task.match(/0x[a-fA-F0-9]{40}/)?.[0];
+  const xdcName = task.match(/\b[a-z0-9-]+\.xdc\b/i)?.[0];
+  const walk = (node) => {
+    for (const [key, value] of Object.entries(node)) {
+      if (value && typeof value === "object") {
+        walk(value);
+        continue;
+      }
+      if (typeof value !== "string") continue;
+      if (address && (/^0x[a-fA-F0-9]{40}$/.test(value) || /address|wallet|owner|account/i.test(key))) node[key] = address;
+      if (xdcName && /name|domain/i.test(key) && /\.xdc$/i.test(value)) node[key] = xdcName;
+    }
+  };
+  walk(copy);
+  return copy;
+}
+
+function bodyFor(docs, service, task) {
+  const target = servicePath(service);
+  let concrete = null;
+  let schema = null;
+  let source = null;
+  for (const { url, doc } of docs) {
+    const found = collect(doc, target);
+    if (!concrete && found.concrete) {
+      concrete = found.concrete;
+      source = url;
+    }
+    if (!schema && found.schema) {
+      schema = found.schema;
+      if (!source) source = url;
+    }
+  }
+  if (concrete) return { body: applyTaskFacts(concrete, task), missing: [], source, kind: "example" };
+  if (schema) return { ...materialize(schema, task), source, kind: "schema" };
+  return { body: null, missing: ["body"], source: null, kind: null };
+}
+
+function shellCommand(method, url, body) {
+  let command = `npx xdcai call ${JSON.stringify(url)} --method ${method}`;
+  if (body != null) command += ` --data ${JSON.stringify(JSON.stringify(body))}`;
+  return command;
 }
 
 function rank(services, task) {
@@ -156,7 +358,6 @@ function rank(services, task) {
 
   const winner = ranked[0].s;
   const filled = fillUrl(winner.url, task);
-  const sibling = freeSibling(services, winner);
   const price = priceOf(winner);
   const lookalike = ranked.slice(1, 6).sort((a, b) => priceOf(a.s) - priceOf(b.s))[0];
 
@@ -167,17 +368,14 @@ function rank(services, task) {
     lookalike
       ? `Next option is ${lookalike.s.providerName} at ${lookalike.s.priceUSDC} USDC (score ${lookalike.score}).`
       : "No second match.",
-    filled.missing.length
-      ? `Replace ${filled.missing.join(", ")} in the URL before calling.`
-      : "",
-    sibling ? `Read ${sibling.url} before paying if you need the request body.` : "",
+    filled.missing.length ? `Replace ${filled.missing.join(", ")} in the URL before calling.` : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return {
     task,
-    worthPaying: price > 0 && filled.missing.length === 0,
+    worthPaying: false,
     terms,
     reason: price === 0 ? "The best match is free. Pay nothing." : why,
     call: {
@@ -186,8 +384,10 @@ function rank(services, task) {
       priceUSDC: winner.priceUSDC,
       capability: winner.capability,
       provider: winner.providerName,
-      body: winner.method === "GET" ? null : null,
-      readFirst: sibling ? sibling.url : null,
+      body: null,
+      command: null,
+      ready: false,
+      readFirst: null,
       missing: filled.missing,
       why,
     },
@@ -204,18 +404,61 @@ function rank(services, task) {
   };
 }
 
+async function routeTask(services, task) {
+  const result = rank(services, task);
+  if (!result.call) return result;
+  const service = services.find(
+    (s) => s.providerName === result.call.provider && s.method === result.call.method && s.capability === result.call.capability
+  );
+  const price = service ? priceOf(service) : Number(result.call.priceUSDC);
+  let body = null;
+  let source = null;
+  let bodyKind = null;
+  const missing = [...result.call.missing];
+
+  if (service && service.method !== "GET") {
+    const docs = await loadDocs(docSiblings(services, service));
+    const built = bodyFor(docs, service, task);
+    body = built.body;
+    source = built.source;
+    bodyKind = built.kind;
+    for (const item of built.missing) if (!missing.includes(item)) missing.push(item);
+  }
+
+  const ready = missing.length === 0 && (result.call.method === "GET" || body != null);
+  const note = !ready && result.call.method !== "GET"
+    ? "No published example covers the required body. Do not pay this endpoint yet."
+    : ready && bodyKind === "example"
+      ? "Request body is the provider's published example. Run call.command."
+      : ready && body
+        ? "Request body is filled from the provider's published schema. Run call.command."
+        : ready
+          ? "Run call.command."
+          : "";
+  const reason = [result.reason, note].filter(Boolean).join(" ");
+  result.worthPaying = price > 0 && ready;
+  result.reason = price === 0 && ready ? "The best match is free. Pay nothing. Run call.command." : reason;
+  result.call.body = body;
+  result.call.command = shellCommand(result.call.method, result.call.url, body);
+  result.call.ready = ready;
+  result.call.readFirst = source;
+  result.call.missing = missing;
+  result.call.why = result.reason;
+  return result;
+}
+
 function schema() {
   return {
     capability: "xdc.agent.route",
     description:
-      "Send one task sentence. Get back the single live marketplace call worth paying: method, URL, price, and why it beat the next option.",
+      "Send one task sentence. Get back one ready marketplace call: method, URL, request body, and the command to run.",
     priceUSDC: "0.05",
     method: "POST",
     path: "/route",
     body: { task: { type: "string", required: true, maxLength: 500 } },
-    example: { task: "resolve the owner of alice.xdc" },
+    example: { task: "deploy an erc20 token" },
     response:
-      "worthPaying, call.method, call.url, call.priceUSDC, call.body, call.why, runnerUp. A free match returns worthPaying false.",
+      "worthPaying, call.ready, call.method, call.url, call.body, call.command, call.why, runnerUp. worthPaying is false when the URL or body is not ready.",
   };
 }
 
@@ -251,7 +494,7 @@ async function handle(req, res) {
     }
     try {
       const services = await loadCatalog();
-      return send(res, 200, rank(services, task));
+      return send(res, 200, await routeTask(services, task));
     } catch (err) {
       return send(res, 502, { error: err instanceof Error ? err.message : "catalog unavailable" });
     }
@@ -270,4 +513,4 @@ server.listen(PORT, HOST, () => {
   console.log(`call router listening on ${HOST}:${PORT}`);
 });
 
-export { rank, termsFromTask, scoreService };
+export { rank, routeTask, termsFromTask, scoreService };

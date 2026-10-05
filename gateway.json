@@ -1,23 +1,23 @@
 {
   "name": "Call Router",
   "upstreamBaseUrl": "https://bland-gold-pi--abdullahizzldin.replit.app",
-  "description": "Send one task sentence. Get the single marketplace call worth paying: method, URL, price, and why it beat the next option.",
-  "tags": ["xdc", "agent", "marketplace", "merchant", "x402", "route"],
+  "description": "Send one task sentence. Get one ready marketplace call: method, URL, request body, and the command to run.",
+  "tags": ["xdc", "agent", "marketplace", "x402", "route", "router", "recommend"],
   "paymentType": "x402",
   "isPublic": true,
   "auth": { "method": "none" },
   "routes": [
     {
-      "method": "GET",
-      "path": "/schema",
-      "priceUSDC": "0",
-      "capability": "xdc.agent.route.schema Free input shape for the call router"
-    },
-    {
       "method": "POST",
       "path": "/route",
       "priceUSDC": "0.05",
-      "capability": "xdc.agent.route Pick the one marketplace service to pay for a task and return the method, URL, and price"
+      "capability": "xdc.agent.route Recommend one marketplace service for a task and return a ready call with method, URL, body, and command"
+    },
+    {
+      "method": "GET",
+      "path": "/schema",
+      "priceUSDC": "0",
+      "capability": "xdc.agent.schema Free input shape. Send a task string to the paid endpoint."
     }
   ]
 }
