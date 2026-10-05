@@ -93,18 +93,6 @@ An agent that reads every row and picks the shop whose capability is the job its
 - It does not recommend itself.
 - A payment from this project's own wallet to this listing is self-dealing. The hackathon prize ignores that.
 
-## How to see if anyone paid
-
-https://xdcai.tech/marketplace/call-router
-
-**Fees earned** is the USDC that arrived. The paid `/route` row is the sale count. Opens of the free `/schema` page show up in the header and are not sales. The transactions table says "No transactions yet" until a real payment settles.
-
-```bash
-npx xdcai marketplace list --search route
-```
-
-On the `/route` row, `calls` is how many times it was hit and `volumeUSDC` is how much it earned.
-
 ## Run the server
 
 The live process is the Replit app. This folder is the source.
