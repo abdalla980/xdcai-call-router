@@ -5,7 +5,7 @@ const PORT = Number(process.env.PORT || 8787);
 const SELF_NAME = (process.env.SELF_NAME || "Call Router").toLowerCase();
 
 const STOP = new Set(
-  "a an the to for of and or my me i im on in with from this that what how is are was were be been being do does did get give find need needs needed want wants please show tell can could you your we our it its about into over under just any some who whom which when where why will would should make made using use used buy order get".split(
+  "a an the to for of and or my me i im on in with from this that what how is are was were be been being do does did get give find need needs needed want wants please show tell can could you your we our it its about into over under just any some who whom which when where why will would should make made using use used buy order get service services app whether checks".split(
     " "
   )
 );
@@ -28,6 +28,8 @@ const ALIASES = {
   domain: ["xns", "names"],
   name: ["xns", "names"],
   resolve: ["xns"],
+  paid: ["payment", "payments"],
+  payment: ["payments"],
 };
 
 let cache = { at: 0, services: [] };
@@ -59,7 +61,7 @@ function scoreService(service, terms) {
     let best = 0;
     for (const tag of tagList) {
       if (tag === term) best = Math.max(best, 5);
-      else if (tag.includes(term) || term.includes(tag)) best = Math.max(best, 3);
+      else if (tag === `${term}s` || term === `${tag}s`) best = Math.max(best, 4);
     }
     if (cap === term) best = Math.max(best, 5);
     else if (capTokens.includes(term)) best = Math.max(best, 4);
@@ -322,8 +324,36 @@ function shellCommand(method, url, body) {
   return command;
 }
 
-function rank(services, task) {
+function specificity(service, terms) {
+  const blob = `${service.url} ${service.capability}`.toLowerCase();
+  const own = new Set(tokens(blob));
+  let n = 0;
+  for (const term of terms) if (own.has(term)) n += 1;
+  return n;
+}
+
+function shortlist(services, task) {
   const terms = termsFromTask(task);
+  if (!terms.length) return { terms, ranked: [] };
+  const ranked = services
+    .filter((s) => !isSelf(s))
+    .map((s) => ({ s, score: scoreService(s, terms) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const spec = specificity(b.s, terms) - specificity(a.s, terms);
+      if (spec) return spec;
+      const vol = (b.s.volumeUSDC || 0) - (a.s.volumeUSDC || 0);
+      if (vol) return vol;
+      const calls = (b.s.calls || 0) - (a.s.calls || 0);
+      if (calls) return calls;
+      return priceOf(a.s) - priceOf(b.s);
+    });
+  return { terms, ranked };
+}
+
+function rank(services, task) {
+  const { terms, ranked } = shortlist(services, task);
   if (!terms.length) {
     return {
       task,
@@ -332,19 +362,6 @@ function rank(services, task) {
       call: null,
     };
   }
-
-  const ranked = services
-    .filter((s) => !isSelf(s))
-    .map((s) => ({ s, score: scoreService(s, terms) }))
-    .filter((x) => x.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      const vol = (b.s.volumeUSDC || 0) - (a.s.volumeUSDC || 0);
-      if (vol) return vol;
-      const calls = (b.s.calls || 0) - (a.s.calls || 0);
-      if (calls) return calls;
-      return priceOf(a.s) - priceOf(b.s);
-    });
 
   if (!ranked.length) {
     return {
@@ -404,19 +421,15 @@ function rank(services, task) {
   };
 }
 
-async function routeTask(services, task) {
-  const result = rank(services, task);
-  if (!result.call) return result;
-  const service = services.find(
-    (s) => s.providerName === result.call.provider && s.method === result.call.method && s.capability === result.call.capability
-  );
-  const price = service ? priceOf(service) : Number(result.call.priceUSDC);
+async function finishMatch(services, task, entry, runnerUp, skipped) {
+  const service = entry.s;
+  const filled = fillUrl(service.url, task);
   let body = null;
   let source = null;
   let bodyKind = null;
-  const missing = [...result.call.missing];
+  const missing = [...filled.missing];
 
-  if (service && service.method !== "GET") {
+  if (service.method !== "GET") {
     const docs = await loadDocs(docSiblings(services, service));
     const built = bodyFor(docs, service, task);
     body = built.body;
@@ -425,8 +438,19 @@ async function routeTask(services, task) {
     for (const item of built.missing) if (!missing.includes(item)) missing.push(item);
   }
 
-  const ready = missing.length === 0 && (result.call.method === "GET" || body != null);
-  const note = !ready && result.call.method !== "GET"
+  const ready = missing.length === 0 && (service.method === "GET" || body != null);
+  const price = priceOf(service);
+  const why = [
+    skipped ? "Skipped a higher match that was not ready to call." : "",
+    `Best ready match for ${termsFromTask(task).join(", ")} (score ${entry.score}).`,
+    `${service.providerName}: ${service.capability}.`,
+    `${service.calls || 0} calls, ${service.volumeUSDC || 0} USDC already settled, price ${service.priceUSDC} USDC.`,
+    runnerUp ? `Next option is ${runnerUp.s.providerName} at ${runnerUp.s.priceUSDC} USDC (score ${runnerUp.score}).` : "No second match.",
+    missing.length ? `Replace ${missing.join(", ")} in the URL before calling.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const note = !ready && service.method !== "GET"
     ? "No published example covers the required body. Do not pay this endpoint yet."
     : ready && bodyKind === "example"
       ? "Request body is the provider's published example. Run call.command."
@@ -435,16 +459,63 @@ async function routeTask(services, task) {
         : ready
           ? "Run call.command."
           : "";
-  const reason = [result.reason, note].filter(Boolean).join(" ");
-  result.worthPaying = price > 0 && ready;
-  result.reason = price === 0 && ready ? "The best match is free. Pay nothing. Run call.command." : reason;
-  result.call.body = body;
-  result.call.command = shellCommand(result.call.method, result.call.url, body);
-  result.call.ready = ready;
-  result.call.readFirst = source;
-  result.call.missing = missing;
-  result.call.why = result.reason;
-  return result;
+  const reason = price === 0 && ready
+    ? "The best match is free. Pay nothing. Run call.command."
+    : [why, note].filter(Boolean).join(" ");
+  return {
+    task,
+    worthPaying: price > 0 && ready,
+    terms: termsFromTask(task),
+    reason,
+    call: {
+      method: service.method,
+      url: filled.url,
+      priceUSDC: service.priceUSDC,
+      capability: service.capability,
+      provider: service.providerName,
+      body,
+      command: shellCommand(service.method, filled.url, body),
+      ready,
+      readFirst: source,
+      missing,
+      why: reason,
+    },
+    runnerUp: runnerUp
+      ? {
+          method: runnerUp.s.method,
+          url: runnerUp.s.url,
+          priceUSDC: runnerUp.s.priceUSDC,
+          capability: runnerUp.s.capability,
+          provider: runnerUp.s.providerName,
+          score: runnerUp.score,
+        }
+      : null,
+  };
+}
+
+async function routeTask(services, task) {
+  const { terms, ranked } = shortlist(services, task);
+  if (!terms.length) {
+    return { task, worthPaying: false, reason: "The task has no searchable words.", call: null };
+  }
+  if (!ranked.length) {
+    return {
+      task,
+      worthPaying: false,
+      reason: "Nothing in the live catalog matches this task. Do not pay anyone for it.",
+      terms,
+      call: null,
+    };
+  }
+
+  const pool = ranked.slice(0, 8);
+  let fallback = null;
+  for (let i = 0; i < pool.length; i++) {
+    const result = await finishMatch(services, task, pool[i], pool[i + 1] || null, i > 0);
+    if (!fallback) fallback = result;
+    if (result.call.ready) return result;
+  }
+  return fallback;
 }
 
 function schema() {
