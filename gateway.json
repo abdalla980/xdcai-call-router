@@ -1,16 +1,18 @@
 {
   "name": "Call Router",
   "upstreamBaseUrl": "https://bland-gold-pi--abdullahizzldin.replit.app",
-  "description": "Send one task sentence. Get one ready marketplace call: method, URL, request body, and the command to run.",
-  "tags": ["xdc", "agent", "marketplace", "x402", "route", "router", "recommend", "endpoint", "coffee", "latte", "merch", "token", "erc20", "sanctions", "screening", "screen", "xns", "resolve"],
+  "description": "Send one task sentence. Get one ready call to an independent marketplace merchant: method, URL, request body, and the command to run.",
+  "tags": ["route", "router", "routing", "recommend", "recommendation", "endpoint", "marketplace", "agent", "xdc", "x402", "discovery", "directory", "catalog", "lookup", "which-api"],
   "paymentType": "x402",
   "isPublic": true,
-  "auth": { "method": "none" },
+  "auth": {
+    "method": "none"
+  },
   "routes": [
     {
       "method": "POST",
       "path": "/route",
-      "priceUSDC": "0.05",
+      "priceUSDC": "0.25",
       "capability": "xdc.agent.route Recommend one marketplace service for a task and return a ready call with method, URL, body, and command"
     },
     {

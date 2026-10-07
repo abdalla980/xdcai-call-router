@@ -2,7 +2,7 @@
 
 An agent has a job and does not know which marketplace URL to pay. Call Router takes one sentence and returns one ready call: the method, the URL, the request body, and the command to run.
 
-It is listed on the XDCAI marketplace for the AI, Unsupervised hackathon. Agents pay **0.05 USDC** per lookup. The USDC goes to this service. The next shop in the command is paid separately, by the same agent, from that agent's own wallet.
+It is listed on the XDCAI marketplace for the AI, Unsupervised hackathon. Agents pay **0.25 USDC** per lookup. The USDC goes to this service. The next shop in the command is paid separately, by the same agent, from that agent's own wallet.
 
 ## The two endpoints
 
@@ -10,7 +10,7 @@ It is listed on the XDCAI marketplace for the AI, Unsupervised hackathon. Agents
 |---|---|---|
 | What | Shows the input shape | Does the lookup |
 | Method | `GET /schema` | `POST /route` |
-| Price | 0 | 0.05 USDC |
+| Price | 0 | 0.25 USDC |
 | URL | https://api.xdcai.tech/x402/connect/gw_3bbc62af26058e8b27/schema | https://api.xdcai.tech/x402/connect/gw_3bbc62af26058e8b27/route |
 
 The paid call:
@@ -60,38 +60,35 @@ A ready paid call looks like this:
 
 The body is copied from that provider's published example, or filled from the required fields in its published schema. If the task includes a `0x` address, that address replaces the example owner or wallet. The router does not invent a body when no example exists.
 
-## Three real results
+## Who it routes to
 
-**Buy a latte.** Ready. The command is a GET to Unsupervised House coffee at 0.25 USDC. No body. The agent runs the command and pays the coffee shop.
+- **Never the hackathon house desk.** Check-in, coffee, breakfast, merch, bookings and the other services paid to the house wallet `0x231827c7…` are dropped from results. The router does not send agents there.
+- **Never itself.** Listings on this service's own wallet are dropped.
+- **Paid merchants first.** When two services match a task equally well, the one priced at 0.20 USDC or more ranks first. `call.paidMerchant` is true for those.
+- **Free is free.** If the best ready match costs nothing, the reply says "Pay nothing" and `worthPaying` is false.
 
-**Deploy an ERC20 token.** Ready. The command is the BBBFi token endpoint at 1.00 USDC, with the published example body already filled in.
+## Four real results
 
-**Solidity quiz**, or any URL that still contains `:id`, or a POST whose provider never published an example body. Not ready. `worthPaying` is false. The reply says not to pay that next service yet.
+Run against the live catalog on Thursday 8 October.
 
-A task that matches nothing returns `call: null` and says not to pay anyone.
+**Deploy an ERC20 token.** Ready. A POST to the BBBFi token endpoint at 1.00 USDC, with the published example body already filled in.
 
-## How an agent decides to buy
+**Audit my smart contract.** Ready. A GET to xforty Chain Tools `/audit` at 1.00 USDC.
 
-This is the loop the XDCAI setup gives an agent:
+**Buy a latte.** No match. The only coffee seller is the house desk, so the reply is `call: null` and says not to pay anyone.
 
-1. The human says something like "deploy an ERC20" or "buy a latte."
-2. The agent pulls the content words out of that sentence.
-3. It runs `npx xdcai marketplace list --search` with those words.
-4. It calls the first row. The list is ranked by words, not by price.
-5. It pays that row's price from its own wallet.
+**Solidity quiz**, or any URL that still contains `:id`, or a POST whose provider never published an example body. Not ready, so the router falls back to the next ready match or says not to pay.
 
-A matching tag is the highest score. Words inside a capability score less. The provider name scores less than that. Two rows with the same score stay in catalog order, and Call Router is earlier in the catalog than the specialist shops. A lower price never moves a row up. Cutting 0.05 USDC to 0.01 USDC would not make more agents buy.
+## How an agent finds it
 
-Before the task words were tags, a search for `coffee` or `token` returned the coffee shop or the token shop and this service was invisible. The listing now carries the words agents actually search: `coffee`, `latte`, `merch`, `token`, `erc20`, `sanctions`, `screening`, `screen`, `xns`, `resolve`, plus `route`, `recommend`, and `endpoint`. A search for those words returns the paid `/route` row first. The agent pays 0.05 USDC and receives the ready command for the real shop.
-
-An agent that reads every row and picks the shop whose capability is the job itself can still skip this service. The agents that follow the rank and call the first row are the buyers.
+The listing tags describe what the router does: `route`, `router`, `routing`, `recommend`, `recommendation`, `endpoint`, `marketplace`, `agent`, `xdc`, `x402`, `discovery`, `directory`, `catalog`, `lookup`, `which-api`. It does not carry the tags of the shops it routes to, so a search for `coffee` or `token` finds those shops directly. Agents that do not know which shop to search for are the buyers.
 
 ## What this does not do
 
 - It does not pay the next service. The command it returns still charges the agent's wallet.
 - It does not write the agent's app.
-- It does not recommend itself.
-- A payment from this project's own wallet to this listing is self-dealing. The hackathon prize ignores that.
+- It does not recommend itself or the house desk.
+- A payment from this project's own wallet to this listing is self-dealing. The hackathon prize ignores that, and this project never calls its own listing.
 
 ## Run the server
 
@@ -102,5 +99,7 @@ node server.mjs
 ```
 
 `PORT` defaults to 8787. Replit sets it to 8080. `GET /health` returns `{ "ok": true }`. `GET /schema` is the free description. `POST /route` with `{ "task": "..." }` is the lookup.
+
+`HOUSE_PAY_TO` (comma-separated wallets) and `SELF_PAY_TO` override the excluded wallets.
 
 `gateway.json` is the marketplace listing: name, tags, prices, and the upstream URL.

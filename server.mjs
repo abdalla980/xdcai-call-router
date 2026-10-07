@@ -3,6 +3,16 @@ import { createServer } from "node:http";
 const CATALOG_URL = process.env.CATALOG_URL || "https://xdcai.tech/api/catalog";
 const PORT = Number(process.env.PORT || 8787);
 const SELF_NAME = (process.env.SELF_NAME || "Call Router").toLowerCase();
+const SELF_PAY_TO = (process.env.SELF_PAY_TO || "0x9eBc1Ffb8F53e6FD2Bf341AAe3562DB9b26C60A5").toLowerCase();
+// The hackathon house desk (check-in, coffee, breakfast, merch, bookings, compliance). Calls to it do not score.
+const HOUSE_PAY_TO = new Set(
+  (process.env.HOUSE_PAY_TO || "0x231827c760D5953BB5fC29191ee2e0b59408a266")
+    .toLowerCase()
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+const MIN_SCORING_PRICE = 0.2;
 
 const STOP = new Set(
   "a an the to for of and or my me i im on in with from this that what how is are was were be been being do does did get give find need needs needed want wants please show tell can could you your we our it its about into over under just any some who whom which when where why will would should make made using use used buy order get service services app whether checks".split(
@@ -11,15 +21,6 @@ const STOP = new Set(
 );
 
 const ALIASES = {
-  latte: ["coffee"],
-  espresso: ["coffee"],
-  cappuccino: ["coffee"],
-  americano: ["coffee"],
-  mocha: ["coffee"],
-  macchiato: ["coffee"],
-  cappucino: ["coffee"],
-  hoodie: ["merch"],
-  shirt: ["merch"],
   erc20: ["token"],
   aml: ["sanctions", "screening"],
   kyc: ["sanctions", "screening"],
@@ -87,7 +88,18 @@ function priceOf(service) {
 }
 
 function isSelf(service) {
-  return String(service.providerName || "").toLowerCase() === SELF_NAME;
+  return (
+    String(service.providerName || "").toLowerCase() === SELF_NAME ||
+    String(service.payTo || "").toLowerCase() === SELF_PAY_TO
+  );
+}
+
+function isHouse(service) {
+  return HOUSE_PAY_TO.has(String(service.payTo || "").toLowerCase());
+}
+
+function isScoring(service) {
+  return priceOf(service) >= MIN_SCORING_PRICE;
 }
 
 function fillUrl(url, task) {
@@ -336,11 +348,13 @@ function shortlist(services, task) {
   const terms = termsFromTask(task);
   if (!terms.length) return { terms, ranked: [] };
   const ranked = services
-    .filter((s) => !isSelf(s))
+    .filter((s) => !isSelf(s) && !isHouse(s))
     .map((s) => ({ s, score: scoreService(s, terms) }))
     .filter((x) => x.score > 0)
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
+      const tier = Number(isScoring(b.s)) - Number(isScoring(a.s));
+      if (tier) return tier;
       const spec = specificity(b.s, terms) - specificity(a.s, terms);
       if (spec) return spec;
       const vol = (b.s.volumeUSDC || 0) - (a.s.volumeUSDC || 0);
@@ -473,6 +487,8 @@ async function finishMatch(services, task, entry, runnerUp, skipped) {
       priceUSDC: service.priceUSDC,
       capability: service.capability,
       provider: service.providerName,
+      payTo: service.payTo || null,
+      paidMerchant: isScoring(service),
       body,
       command: shellCommand(service.method, filled.url, body),
       ready,
@@ -522,14 +538,14 @@ function schema() {
   return {
     capability: "xdc.agent.route",
     description:
-      "Send one task sentence. Get back one ready marketplace call: method, URL, request body, and the command to run.",
-    priceUSDC: "0.05",
+      "Send one task sentence. Get back one ready marketplace call: method, URL, request body, and the command to run. The hackathon house desk is never returned. On equal match, merchants priced at 0.20 USDC or more rank first.",
+    priceUSDC: "0.25",
     method: "POST",
     path: "/route",
     body: { task: { type: "string", required: true, maxLength: 500 } },
     example: { task: "deploy an erc20 token" },
     response:
-      "worthPaying, call.ready, call.method, call.url, call.body, call.command, call.why, runnerUp. worthPaying is false when the URL or body is not ready.",
+      "worthPaying, call.ready, call.method, call.url, call.body, call.command, call.paidMerchant, call.why, runnerUp. worthPaying is false when the URL or body is not ready.",
   };
 }
 
